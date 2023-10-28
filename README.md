@@ -12,6 +12,6 @@ To use this project
 1. Clone the repository.
 2. Install the project dependencies using `pip install -r requirements.txt`
 3. To run the tests use `python -m pytest tests`
-4. To view the api documentation, open `api-docs.html`` in a browser
+4. To view the api documentation, open `api-docs.html` in a browser
 
 The AWS CodeBuild and AWS CloudFormation YAML files for serverless deployment are included for reference.
