@@ -1,0 +1,87 @@
+version: 0.2
+env:
+  variables:
+    SERVICE_NAME: "MyService"
+    ENVIRONMENT_NAME: "TestEnvironment"
+    SAM_S3_BUCKET: "path_to_s3_bucket"
+phases:
+  install:
+    runtime-versions:
+      python: 3.9
+      nodejs: 14
+    commands:
+      # Installing Python virtual environment and dependencies
+      - python3.9 -m venv venv
+      - . venv/bin/activate
+      - python3.9 -m pip install --upgrade pip
+      - pip3 install -q -r requirements.txt
+      # Installing tools for OpenApi 3.0 validation, security, linting and contract checks
+      - pip install openapi-spec-validator prospector mypy coverage schemathesis
+    finally:
+      - echo "Log CLI Versions"
+      - aws --version
+      - sam --version
+      - python --version
+      - pip show openapi-spec-validator
+  pre_build:
+    commands:
+      # upload template to S3
+      - aws s3 cp ./template.yaml s3://$SAM_S3_BUCKET/templates/template.yaml
+      - export TEMPLATE_URL=https://$SAM_S3_BUCKET.s3.$AWS_REGION.amazonaws.com/templates/template.yaml
+      # Validate the SAM template
+      - sam validate-template --lint
+      # Validate the OpenApi 3.0 specification
+      - echo "Open api 3.0 schema validation"
+      - openapi-spec-validator api-contract.yaml --errors all
+      # Running all prospector tools for code quality analysis (ignore venv folder)
+      - echo "Prospector checks"
+      - prospector -i venv
+      # Running linting
+      - echo "Linting checks"
+      - mypy
+      # Running bandit for security testing
+      - bandit --version
+      - echo "Bandit tests"
+      - bandit -r -q . -x ./venv
+      # Running all unittests
+      - echo "Unit tests"
+      - coverage run --branch --include=src/*.py,src/*/*.py,src/*/*/*.py,src/*/*/*/*.py -m unittest tests/test_*.py tests/*/test_*.py tests/*/*/test_*.py tests/*/*/*/test_*.py"
+      # Checking that the code is 100% covered by unit tests
+      - echo "Coverage check"
+      - coverage report -m --skip-covered --fail-under=100 --omit=tests/*,it/*
+    finally:
+      - echo "Pre-build complete"
+  build:
+    commands:
+      # Copy the contract OpenApi 3.0 spec to the S3 bucket, so it can later be transformed into the SAM template
+      - aws s3 cp api-contract.yaml s3://$SAM_S3_BUCKET/dev/$CLEAN_PR/ > /dev/null
+      # Build the SAM template
+      - echo "SAM build"
+      - sam build -s .build
+      # Package the build
+      - echo "SAM package"
+      - sam package --s3-bucket $SAM_S3_BUCKET --s3-prefix prod --output-template-file NewSamTemplate.yaml
+      # Deploy the package
+      - echo "SAM deploy"
+      - >
+        $TAG "SAM deploy"
+        "sam deploy
+        --s3-bucket $SAM_S3_BUCKET
+        --s3-prefix prod
+        --no-fail-on-empty-changeset
+        --capabilities CAPABILITY_NAMED_IAM
+        --template-file NewSamTemplate.yaml
+        --stack-name simple-password-generator-stack
+        --parameter-overrides
+        ServiceName=$SERVICE_NAME
+        ApiNameSuffix=prod
+        S3Bucket=$SAM_S3_BUCKET/prod"
+      # Get the ApiGateway Base URL
+      - export BASE_URL=$(./tools/build/get-api-url.sh $SERVICE_NAME-$CLEAN_PR-apis)
+      - echo BASE_URL is $BASE_URL
+      # Run Schemathesis API Contract Tests against the Base URL
+      - echo "Schemathesis contract tests"
+      - chmod +x schemathesis_contract_tests.sh
+      - sh schemathesis_contract_tests.sh $BASE_URL
+    finally:
+    - echo "Build complete"

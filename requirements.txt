@@ -1,0 +1,4 @@
+aws_lambda_decorators
+faker
+
+pytest

@@ -1,0 +1,152 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: An AWS Serverless Specification template for the AWS Python Serverless Template
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  ServiceName:
+    Type: String
+    Default: serverless
+  ApiNameSuffix:
+    Type: String
+    Default: prod
+  S3Bucket:
+    Type: String
+    Default: bucket value will be overriden in buildspec
+
+Globals:
+  Function:
+    Runtime: python3.9
+    Timeout: 10
+    MemorySize: 512
+
+Resources:
+# Policies
+  LogsLambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ServiceName}-${AWS::Region}-${ApiNameSuffix}-logs-policy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: "*"
+      Roles:
+        - !Ref SimplePasswordGetLambdaRole
+  LambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${ServiceName}-${AWS::Region}-${ApiNameSuffix}-lambda-policy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+          - Effect: Allow
+            Action:
+              - xray:PutTraceSegments
+              - xray:PutTelemetryRecords
+            Resource: "*"
+      Roles:
+        - !Ref LambdaRole
+
+  # Roles
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ServiceName}-${AWS::Region}-${ApiNameSuffix}-lambda-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+  SimplePasswordGetLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ServiceName}-${AWS::Region}-${ApiNameSuffix}-simple-pw-get
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+  # Lambdas
+  SimplePasswordGet:
+    DependsOn: LambdaPolicy
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: simple_password_get.handler
+      Description: Generate a simple password
+      MemorySize: 1024
+      Events:
+        SimplePasswordGetApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /simple_password
+            Method: GET
+      CodeUri: ./simple_password/get
+      Role: !GetAtt SimplePasswordGetLambdaRole.Arn
+      Tracing: Active
+
+# ApiGateway
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub ${ServiceName}-${ApiNameSuffix}-apis
+      EndpointConfiguration: REGIONAL
+      Cors:
+        AllowOrigin: "'*'"
+        AllowHeaders: "'Content-Type,Authorization,api_key'"
+        AllowMethods: "'OPTIONS,POST,GET,PATCH,DELETE'"
+      TracingEnabled: true
+      Auth:
+        ResourcePolicy:
+          CustomStatements: [ {
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "execute-api:Invoke",
+            "Resource": "execute-api:/*/*/*"
+          } ]
+          AwsAccountWhitelist:
+            - !Ref AWS::AccountId
+      DefinitionBody:
+        Fn::Transform:
+          Name: AWS::Include
+          Parameters:
+            Location: !Sub s3://${S3Bucket}/api-contract.yaml
+      StageName: Prod
+      GatewayResponses:
+        UNAUTHORIZED:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+              Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              Access-Control-Allow-Methods: "'OPTIONS,POST,GET,PATCH,DELETE'"
+        DEFAULT_5XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+              Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              Access-Control-Allow-Methods: "'OPTIONS,POST,GET,PATCH,DELETE'"
+
+  # Log Groups
+  SimplePasswordGetLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${SimplePasswordGet}
